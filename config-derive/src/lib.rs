@@ -151,13 +151,24 @@ pub fn config(_attrs: TokenStream, item: TokenStream) -> TokenStream {
                 let mut res: std::collections::HashMap<String, ::twelf::reexports::serde_json::Value> = std::collections::HashMap::new();
                 for layer in layers {
                     let extension = Self::parse_twelf(layer)?;
-                    res.extend(
-                        extension
-                            .as_object()
-                            .ok_or_else(|| ::twelf::Error::InvalidFormat)?
-                            .to_owned()
-                            .into_iter().filter(|(_k, v)| !v.is_null()),
-                    );
+                    let mut defaulted_extension: std::collections::HashMap<String, ::twelf::reexports::serde_json::Value> = std::collections::HashMap::new();
+                    let extension = extension
+                        .as_object()
+                        .ok_or_else(|| ::twelf::Error::InvalidFormat)?
+                        .to_owned()
+                        .into_iter().filter(|(k, v)| {
+                            if v.is_null() {
+                                return false;
+                            }
+                            if !k.ends_with("__twelf_clap_default__") {
+                                return true
+                            }
+                            let k = k.strip_suffix("__twelf_clap_default__").unwrap();
+                            defaulted_extension.insert(k.to_string(), v.clone());
+                            false
+                        });
+                    res.extend(extension);
+                    res.extend(defaulted_extension);
                 }
 
                 ::twelf::reexports::log::debug!(target: "twelf", "configuration:");
@@ -213,25 +224,32 @@ fn build_clap_branch(
         #(
             let field = String::from(#fields_name);
 
-            let mut insert_into_map = |vals: ::twelf::reexports::clap::parser::RawValues| {
+            let mut insert_into_map = |vals: ::twelf::reexports::clap::parser::RawValues, is_default: bool| {
+                let mut key = field.clone();
+                if is_default {
+                    key += "__twelf_clap_default__";
+                }
+
                 for val in vals.into_iter() {
                     // hacky way of formatting everything to a string:
                     let s = format!("{:?}", val);
                     let s = s.strip_prefix("\"").unwrap_or(&s);
                     let s = s.strip_suffix("\"").unwrap_or(&s);
 
-                    if let Some(existing_val) = map.get_mut(&field) {
+                    if let Some(existing_val) = map.get_mut(&key) {
                         *existing_val = existing_val.clone() + "," + s;
                     } else {
-                        map.insert(field.clone(), s.to_string());
+                        map.insert(key.clone(), s.to_string());
                     }
                 }
             };
 
             if let Some(vals) = matches.try_get_raw(#fields_name).unwrap_or(None) {
-                insert_into_map(vals);
+                let is_default = matches.value_source(#fields_name).unwrap() == ::twelf::reexports::clap::parser::ValueSource::DefaultValue;
+                insert_into_map(vals, is_default);
             } else if let Some(vals) = matches.try_get_raw(#field_names_clap_cloned).unwrap_or(None) {
-                insert_into_map(vals);
+                let is_default = matches.value_source(#field_names_clap_cloned).unwrap() == ::twelf::reexports::clap::parser::ValueSource::DefaultValue;
+                insert_into_map(vals, is_default);
             }
         )*
 
